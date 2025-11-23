@@ -3,12 +3,20 @@ import pandas as pd
 import plotly.express as px
 import os
 
-# --- CONFIGURAÇÕES DO SISTEMA ---
-st.set_page_config(page_title="CNE - Monitoramento 2025", page_icon="🇬🇼", layout="wide")
+# --- 1. CONFIGURAÇÕES VISUAIS E DE SISTEMA ---
+st.set_page_config(
+    page_title="Central de Apuração 2025", 
+    page_icon="🇬🇼", 
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
 ARQUIVO_EXCEL = 'votos_guine_bissau.xlsx'
 
-# --- DADOS OFICIAIS (MESAS POR CÍRCULO) ---
-# Aqui definimos o total de mesas esperado para cada círculo
+# Cores oficiais e estilo
+CORES_PARTIDOS = px.colors.qualitative.Bold
+
+# --- 2. DADOS E METAS (CNE) ---
 META_MESAS = {
     "Círculo 05": 189,
     "Círculo 07": 114,
@@ -16,23 +24,21 @@ META_MESAS = {
     "Círculo 25": 168
 }
 
-PARTIDOS_2025 = [
+PARTIDOS = [
     "PAIGC (PAI - Terra Ranka)", "MADEM G-15", "PRS", "PTG", "APU-PDGB", 
     "PSTGB", "PND", "UM", "RGB-MB", "PUSD", "PSD", "PDS", 
     "FREPASNA", "MDG", "Outros / Brancos / Nulos"
 ]
 
-# --- FUNÇÕES ---
+# --- 3. FUNÇÕES ROBUSTAS ---
 def carregar_dados():
     colunas = ["Círculo", "Mesa", "Partido", "Quantidade"]
     if os.path.exists(ARQUIVO_EXCEL):
         try:
             df = pd.read_excel(ARQUIVO_EXCEL)
-            # Garante que as colunas existam
             for col in colunas:
-                if col not in df.columns: df[col] = "N/A" if col == "Mesa" else 0
-            # Garante que a coluna Mesa seja texto (para não dar erro com mesa '01A')
-            df['Mesa'] = df['Mesa'].astype(str)
+                if col not in df.columns: df[col] = 0 if col == "Quantidade" else "N/A"
+            df['Mesa'] = df['Mesa'].astype(str).str.upper()
             return df
         except:
             return pd.DataFrame(columns=colunas)
@@ -43,117 +49,172 @@ def salvar_no_excel(df):
     try:
         df.to_excel(ARQUIVO_EXCEL, index=False)
         return True
-    except:
+    except Exception as e:
+        st.error(f"Erro ao salvar arquivo: {e}")
         return False
 
-# --- INÍCIO DA INTERFACE ---
-st.title("🇬🇼 Painel de Controle Eleitoral - Guiné-Bissau")
-st.markdown("**Status da Apuração:** Acompanhamento em Tempo Real das Mesas de Voto")
-
+# --- INÍCIO DO APP ---
 if 'votos' not in st.session_state:
     st.session_state['votos'] = carregar_dados()
 
 df = st.session_state['votos']
 
-# --- BARRA SUPERIOR (RESUMO DE PROGRESSO) ---
-# Calcula quantas mesas únicas já foram lançadas por círculo
-if not df.empty:
-    mesas_apuradas = df.groupby("Círculo")["Mesa"].nunique()
-else:
-    mesas_apuradas = pd.Series()
-
-col_kpi1, col_kpi2, col_kpi3, col_kpi4 = st.columns(4)
-metrics_cols = [col_kpi1, col_kpi2, col_kpi3, col_kpi4]
-
-# Exibe os cartões de progresso no topo
-for i, (circulo, total_previsto) in enumerate(META_MESAS.items()):
-    ja_contadas = mesas_apuradas.get(circulo, 0)
-    percentual = (ja_contadas / total_previsto) * 100 if total_previsto > 0 else 0
-    pendentes = total_previsto - ja_contadas
+# --- BARRA LATERAL (LANÇAMENTO) ---
+with st.sidebar:
+    st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/0/01/Flag_of_Guinea-Bissau.svg/320px-Flag_of_Guinea-Bissau.svg.png", width=100)
+    st.title("Lançamento de Atas")
+    st.markdown("---")
     
-    with metrics_cols[i]:
-        st.metric(
-            label=f"{circulo}",
-            value=f"{ja_contadas}/{total_previsto} Mesas",
-            delta=f"{percentual:.1f}% Concluído"
-        )
-        if pendentes > 0:
-            st.warning(f"Faltam {pendentes} mesas")
+    # MODO RÁPIDO
+    modo_rapido = st.checkbox("⚡ Modo Rápido (Travar Mesa)", value=True, help="Mantém o número da mesa preenchido para lançar vários partidos seguidos.")
+
+    with st.form(key='form_principal', clear_on_submit=not modo_rapido):
+        st.subheader("📝 Dados da Urna")
+        
+        # Recupera últimos valores se modo rápido estiver ativo
+        default_circulo = st.session_state.get('last_circulo', list(META_MESAS.keys())[0])
+        default_mesa = st.session_state.get('last_mesa', "") if modo_rapido else ""
+        
+        circulo_sel = st.selectbox("Círculo Eleitoral", list(META_MESAS.keys()), index=list(META_MESAS.keys()).index(default_circulo) if default_circulo in META_MESAS else 0)
+        mesa_input = st.text_input("Nº da Mesa", value=default_mesa, placeholder="Ex: 01, 10A")
+        
+        st.markdown("---")
+        partido_sel = st.selectbox("Partido / Candidato", PARTIDOS)
+        qtd_votos = st.number_input("Votos Válidos", min_value=0, step=1)
+        
+        btn_lancar = st.form_submit_button("💾 CONFIRMAR LANÇAMENTO", type="primary")
+
+    if btn_lancar:
+        if not mesa_input:
+            st.error("⚠️ O número da Mesa é obrigatório!")
         else:
-            st.success("100% Finalizado!")
+            # Salva e Atualiza
+            novo_reg = pd.DataFrame([{
+                "Círculo": circulo_sel,
+                "Mesa": mesa_input.upper(),
+                "Partido": partido_sel,
+                "Quantidade": qtd_votos
+            }])
+            st.session_state['votos'] = pd.concat([st.session_state['votos'], novo_reg], ignore_index=True)
+            salvar_no_excel(st.session_state['votos'])
+            
+            # Guarda estado
+            st.session_state['last_circulo'] = circulo_sel
+            st.session_state['last_mesa'] = mesa_input
+            
+            st.success(f"✅ Voto computado com sucesso!")
+            st.rerun()
+
+# --- PAINEL DE INTELIGÊNCIA ---
+st.title("🇬🇼 Central de Totalização Oficial 2025")
+
+# KPI CARDS
+if not df.empty:
+    total_geral = df["Quantidade"].sum()
+    mesas_unicas = df["Mesa"].nunique()
+    # Partido Líder
+    ranking_rapido = df.groupby("Partido")["Quantidade"].sum().sort_values(ascending=False)
+    lider = ranking_rapido.index[0] if not ranking_rapido.empty else "-"
+    votos_lider = ranking_rapido.iloc[0] if not ranking_rapido.empty else 0
+else:
+    total_geral = 0
+    mesas_unicas = 0
+    lider = "-"
+    votos_lider = 0
+
+kpi1, kpi2, kpi3 = st.columns(3)
+kpi1.metric("🗳️ Total de Votos", f"{total_geral:,.0f}")
+kpi2.metric("📍 Mesas Processadas", mesas_unicas)
+kpi3.metric("🏆 Liderança Atual", f"{lider} ({votos_lider})")
 
 st.markdown("---")
 
-# --- ÁREA LATERAL (LANÇAMENTO) ---
-with st.sidebar.form(key='form_lancamento'):
-    st.header("🗳️ Recebimento de Atas")
-    
-    circulo_sel = st.selectbox("Círculo Eleitoral", list(META_MESAS.keys()))
-    
-    # Mostra quantas mesas tem o círculo selecionado para ajudar o digitador
-    total_deste_circulo = META_MESAS[circulo_sel]
-    st.caption(f"ℹ️ Este círculo possui {total_deste_circulo} mesas.")
-    
-    mesa_input = st.text_input("Número da Mesa", placeholder="Ex: 01, 150, 05A")
-    partido_sel = st.selectbox("Partido", PARTIDOS_2025)
-    qtd_votos = st.number_input("Votos", min_value=0, step=1)
-    
-    btn_salvar = st.form_submit_button("💾 SALVAR DADOS")
+# ABAS
+aba_matriz, aba_graf, aba_dados = st.tabs(["📋 MATRIZ GERAL (NOVA)", "📊 GRÁFICOS", "🔧 AUDITORIA"])
 
-if btn_salvar:
-    if mesa_input == "":
-        st.error("⚠️ Erro: Informe o número da Mesa.")
-    else:
-        novo = pd.DataFrame([{
-            "Círculo": circulo_sel,
-            "Mesa": mesa_input.upper(),
-            "Partido": partido_sel,
-            "Quantidade": qtd_votos
-        }])
-        st.session_state['votos'] = pd.concat([st.session_state['votos'], novo], ignore_index=True)
-        salvar_no_excel(st.session_state['votos'])
-        st.success(f"✅ Voto computado: {partido_sel} na Mesa {mesa_input} ({circulo_sel})")
-        st.rerun() # Atualiza a tela imediatamente para mudar os gráficos
-
-# --- ABAS DE RESULTADO ---
-tab1, tab2, tab3 = st.tabs(["📊 TOTAL NACIONAL", "📍 DETALHE POR MESA", "📝 AUDITORIA"])
-
-# 1. VISÃO NACIONAL
-with tab1:
+# --- ABA 1: MATRIZ TOTALIZADORA (O QUE VOCÊ PEDIU) ---
+with aba_matriz:
+    st.subheader("Matriz de Apuração por Mesa")
+    st.info("Esta tabela cruza todas as Mesas com todos os Partidos e calcula os totais automaticamente.")
+    
+    # Filtro de Círculo (Importante para não ficar gigante)
+    filtro_c = st.selectbox("Filtrar Visualização por Círculo:", ["Todos"] + list(META_MESAS.keys()))
+    
     if not df.empty:
-        total_nac = df.groupby("Partido")["Quantidade"].sum().reset_index().sort_values("Quantidade", ascending=False)
+        if filtro_c != "Todos":
+            df_view = df[df["Círculo"] == filtro_c]
+        else:
+            df_view = df
+
+        if not df_view.empty:
+            # PIVOT TABLE COM TOTAIS (MARGINS=TRUE)
+            # Isso cria a coluna 'All' e a linha 'All' que renomeamos para 'TOTAL'
+            matriz = df_view.pivot_table(
+                index="Partido", 
+                columns="Mesa", 
+                values="Quantidade", 
+                aggfunc="sum", 
+                fill_value=0,
+                margins=True,             # <--- O SEGREDO: Cria totais de linha e coluna
+                margins_name="TOTAL GERAL" # <--- Nome da coluna/linha de soma
+            )
+            
+            # Ordenar para que o partido com mais votos fique no topo (exceto o Total Geral que deve ficar por último)
+            # Removemos o TOTAL GERAL temporariamente para ordenar e depois colocamos de volta
+            total_row = matriz.loc["TOTAL GERAL"]
+            matriz_sem_total = matriz.drop("TOTAL GERAL")
+            matriz_ordenada = matriz_sem_total.sort_values("TOTAL GERAL", ascending=False)
+            matriz_final = pd.concat([matriz_ordenada, pd.DataFrame(total_row).T])
+            
+            st.dataframe(matriz_final, use_container_width=True, height=600)
+            
+            # Barra de Progresso deste círculo
+            if filtro_c != "Todos":
+                total_esperado = META_MESAS[filtro_c]
+                mesas_feitas = df_view["Mesa"].nunique()
+                prog = mesas_feitas / total_esperado if total_esperado > 0 else 0
+                st.progress(prog, text=f"Status do {filtro_c}: {mesas_feitas} de {total_esperado} mesas apuradas.")
+        else:
+            st.warning("Sem dados para este filtro.")
+    else:
+        st.info("Aguardando lançamento de dados.")
+
+# --- ABA 2: GRÁFICOS ---
+with aba_graf:
+    col1, col2 = st.columns([2,1])
+    if not df.empty:
+        # Dados agrupados
+        total_partido = df.groupby("Partido")["Quantidade"].sum().reset_index().sort_values("Quantidade", ascending=False)
         
-        c1, c2 = st.columns([1, 2])
-        with c1:
-            st.dataframe(total_nac, hide_index=True, use_container_width=True)
-        with c2:
-            fig = px.bar(total_nac, x='Quantidade', y='Partido', orientation='h', text='Quantidade', title="Ranking Nacional")
+        with col1:
+            st.subheader("Distribuição Nacional")
+            fig = px.bar(total_partido, x='Partido', y='Quantidade', color='Partido', text='Quantidade', color_discrete_sequence=CORES_PARTIDOS)
             st.plotly_chart(fig, use_container_width=True)
+            
+        with col2:
+            st.subheader("Ranking Percentual")
+            fig_pie = px.pie(total_partido, values='Quantidade', names='Partido', hole=0.4, color_discrete_sequence=CORES_PARTIDOS)
+            st.plotly_chart(fig_pie, use_container_width=True)
     else:
-        st.info("Aguardando início da apuração.")
+        st.write("Gráficos aparecerão após o primeiro voto.")
 
-# 2. DETALHE POR MESA (MATRIZ)
-with tab2:
-    st.subheader("Mapa de Calor das Mesas")
-    filtro_c = st.selectbox("Selecione o Círculo para ver as Mesas:", list(META_MESAS.keys()))
+# --- ABA 3: AUDITORIA E EDIÇÃO ---
+with aba_dados:
+    st.subheader("Editor de Base de Dados")
+    st.markdown("Use esta tabela para **corrigir** erros de digitação ou **excluir** lançamentos duplicados.")
     
-    df_c = df[df["Círculo"] == filtro_c]
-    
-    if not df_c.empty:
-        # Tabela Cruzada: Linha=Partido, Coluna=Número da Mesa
-        piv = df_c.pivot_table(index="Partido", columns="Mesa", values="Quantidade", aggfunc="sum", fill_value=0, margins=True, margins_name="TOTAL")
-        st.write(f"Resultados detalhados: {filtro_c}")
-        st.dataframe(piv, use_container_width=True)
-    else:
-        st.warning(f"Nenhuma mesa lançada ainda no {filtro_c}.")
-
-# 3. EDIÇÃO
-with tab3:
-    st.info("Para corrigir um erro, altere o valor na tabela abaixo e clique em Salvar.")
     if not df.empty:
-        df_edit = st.data_editor(df, num_rows="dynamic", use_container_width=True, key="edit_grid")
-        if st.button("💾 CONFIRMAR CORREÇÕES"):
-            st.session_state['votos'] = df_edit
-            salvar_no_excel(df_edit)
-            st.success("Base de dados corrigida!")
+        df_editavel = st.data_editor(
+            df,
+            num_rows="dynamic",
+            use_container_width=True,
+            key="editor_principal"
+        )
+        
+        if st.button("💾 SALVAR CORREÇÕES", type="primary"):
+            st.session_state['votos'] = df_editavel
+            salvar_no_excel(df_editavel)
+            st.success("Banco de dados atualizado com sucesso!")
             st.rerun()
+    else:
+        st.info("Nenhum registro encontrado.")
